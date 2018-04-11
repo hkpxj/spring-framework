@@ -23,6 +23,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.OpenOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Collections;
 import java.util.List;
@@ -97,13 +98,13 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 			Map<String, Object> hints) {
 
 		return Mono.error(new UnsupportedOperationException(
-				"This reader does not support reading a single element."));
+				"Can't read a multipart request body into a single Part."));
 	}
 
 
 	/**
-	 * Consume and feed input to the Synchronoss parser, then adapt parser
-	 * output events to {@code Flux<Sink<Part>>}.
+	 * Consume and feed input to the Synchronoss parser, then listen for parser
+	 * output events and adapt to {@code Flux<Sink<Part>>}.
 	 */
 	private static class SynchronossPartGenerator implements Consumer<FluxSink<Part>> {
 
@@ -111,10 +112,12 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 
 		private final DataBufferFactory bufferFactory;
 
+
 		SynchronossPartGenerator(ReactiveHttpInputMessage inputMessage, DataBufferFactory factory) {
 			this.inputMessage = inputMessage;
 			this.bufferFactory = factory;
 		}
+
 
 		@Override
 		public void accept(FluxSink<Part> emitter) {
@@ -141,7 +144,7 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 				finally {
 					DataBufferUtils.release(buffer);
 				}
-			}, (ex) -> {
+			}, ex -> {
 				try {
 					listener.onError("Request body input error", ex);
 					parser.close();
@@ -175,11 +178,13 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 
 		private final AtomicInteger terminated = new AtomicInteger(0);
 
-		FluxSinkAdapterListener(FluxSink<Part> sink, DataBufferFactory bufferFactory, MultipartContext context) {
+
+		FluxSinkAdapterListener(FluxSink<Part> sink, DataBufferFactory factory, MultipartContext context) {
 			this.sink = sink;
-			this.bufferFactory = bufferFactory;
+			this.bufferFactory = factory;
 			this.context = context;
 		}
+
 
 		@Override
 		public void onPartFinished(StreamStorage storage, Map<String, List<String>> headers) {
@@ -191,14 +196,14 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 		private Part createPart(StreamStorage storage, HttpHeaders httpHeaders) {
 			String filename = MultipartUtils.getFileName(httpHeaders);
 			if (filename != null) {
-				return new SynchronossFilePart(httpHeaders, storage, this.bufferFactory, filename);
+				return new SynchronossFilePart(httpHeaders, filename, storage, this.bufferFactory);
 			}
 			else if (MultipartUtils.isFormField(httpHeaders, this.context)) {
 				String value = MultipartUtils.readFormParameterValue(storage, httpHeaders);
 				return new SynchronossFormFieldPart(httpHeaders, this.bufferFactory, value);
 			}
 			else {
-				return new DefaultSynchronossPart(httpHeaders, storage, this.bufferFactory);
+				return new SynchronossPart(httpHeaders, storage, this.bufferFactory);
 			}
 		}
 
@@ -226,22 +231,27 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 	}
 
 
-	private static abstract class AbstractSynchronossPart implements Part {
+	private abstract static class AbstractSynchronossPart implements Part {
+
+		private final String name;
 
 		private final HttpHeaders headers;
 
 		private final DataBufferFactory bufferFactory;
 
+
 		AbstractSynchronossPart(HttpHeaders headers, DataBufferFactory bufferFactory) {
 			Assert.notNull(headers, "HttpHeaders is required");
 			Assert.notNull(bufferFactory, "'bufferFactory' is required");
+			this.name = MultipartUtils.getFieldName(headers);
 			this.headers = headers;
 			this.bufferFactory = bufferFactory;
 		}
 
+
 		@Override
 		public String name() {
-			return MultipartUtils.getFieldName(this.headers);
+			return this.name;
 		}
 
 		@Override
@@ -249,26 +259,27 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 			return this.headers;
 		}
 
-		protected DataBufferFactory getBufferFactory() {
+		DataBufferFactory getBufferFactory() {
 			return this.bufferFactory;
 		}
 	}
 
 
-	private static class DefaultSynchronossPart extends AbstractSynchronossPart {
+	private static class SynchronossPart extends AbstractSynchronossPart {
 
 		private final StreamStorage storage;
 
-		DefaultSynchronossPart(HttpHeaders headers, StreamStorage storage, DataBufferFactory factory) {
+
+		SynchronossPart(HttpHeaders headers, StreamStorage storage, DataBufferFactory factory) {
 			super(headers, factory);
 			Assert.notNull(storage, "'storage' is required");
 			this.storage = storage;
 		}
 
+
 		@Override
 		public Flux<DataBuffer> content() {
-			return DataBufferUtils.readInputStream(this.storage::getInputStream, getBufferFactory(),
-					4096);
+			return DataBufferUtils.readInputStream(getStorage()::getInputStream, getBufferFactory(), 4096);
 		}
 
 		protected StreamStorage getStorage() {
@@ -277,16 +288,22 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 	}
 
 
-	private static class SynchronossFilePart extends DefaultSynchronossPart implements FilePart {
+	private static class SynchronossFilePart extends SynchronossPart implements FilePart {
+
+		private static final OpenOption[] FILE_CHANNEL_OPTIONS = {
+				StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE };
+
 
 		private final String filename;
 
-		public SynchronossFilePart(
-				HttpHeaders headers, StreamStorage storage, DataBufferFactory factory, String filename) {
+
+		SynchronossFilePart(HttpHeaders headers, String filename, StreamStorage storage,
+				DataBufferFactory factory) {
 
 			super(headers, storage, factory);
 			this.filename = filename;
 		}
+
 
 		@Override
 		public String filename() {
@@ -299,7 +316,7 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 			FileChannel output = null;
 			try {
 				input = Channels.newChannel(getStorage().getInputStream());
-				output = FileChannel.open(destination.toPath(), StandardOpenOption.WRITE);
+				output = FileChannel.open(destination.toPath(), FILE_CHANNEL_OPTIONS);
 				long size = (input instanceof FileChannel ? ((FileChannel) input).size() : Long.MAX_VALUE);
 				long totalWritten = 0;
 				while (totalWritten < size) {
@@ -338,10 +355,12 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 
 		private final String content;
 
+
 		SynchronossFormFieldPart(HttpHeaders headers, DataBufferFactory bufferFactory, String content) {
 			super(headers, bufferFactory);
 			this.content = content;
 		}
+
 
 		@Override
 		public String value() {
@@ -357,8 +376,8 @@ public class SynchronossPartHttpMessageReader implements HttpMessageReader<Part>
 		}
 
 		private Charset getCharset() {
-			return Optional.ofNullable(MultipartUtils.getCharEncoding(headers()))
-					.map(Charset::forName).orElse(StandardCharsets.UTF_8);
+			String name = MultipartUtils.getCharEncoding(headers());
+			return (name != null ? Charset.forName(name) : StandardCharsets.UTF_8);
 		}
 	}
 

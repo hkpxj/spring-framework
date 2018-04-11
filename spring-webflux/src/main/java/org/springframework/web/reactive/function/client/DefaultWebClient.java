@@ -42,14 +42,12 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.reactive.ClientHttpRequest;
-import org.springframework.http.client.reactive.ClientHttpResponse;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MimeType;
 import org.springframework.util.MultiValueMap;
-import org.springframework.web.reactive.function.BodyExtractor;
 import org.springframework.web.reactive.function.BodyExtractors;
 import org.springframework.web.reactive.function.BodyInserter;
 import org.springframework.web.reactive.function.BodyInserters;
@@ -64,6 +62,8 @@ import org.springframework.web.util.UriBuilderFactory;
  * @since 5.0
  */
 class DefaultWebClient implements WebClient {
+
+	private static final String URI_TEMPLATE_ATTRIBUTE = WebClient.class.getName() + ".uriTemplate";
 
 	private static final Mono<ClientResponse> NO_HTTP_CLIENT_RESPONSE_ERROR = Mono.error(
 			new IllegalStateException("The underlying HTTP client completed without emitting a response."));
@@ -161,8 +161,8 @@ class DefaultWebClient implements WebClient {
 		@Nullable
 		private BodyInserter<?, ? super ClientHttpRequest> inserter;
 
-		@Nullable
-		private Map<String, Object> attributes;
+		private final Map<String, Object> attributes = new LinkedHashMap<>(4);
+
 
 		DefaultRequestBodyUriSpec(HttpMethod httpMethod) {
 			this.httpMethod = httpMethod;
@@ -170,11 +170,13 @@ class DefaultWebClient implements WebClient {
 
 		@Override
 		public RequestBodySpec uri(String uriTemplate, Object... uriVariables) {
+			attribute(URI_TEMPLATE_ATTRIBUTE, uriTemplate);
 			return uri(uriBuilderFactory.expand(uriTemplate, uriVariables));
 		}
 
 		@Override
 		public RequestBodySpec uri(String uriTemplate, Map<String, ?> uriVariables) {
+			attribute(URI_TEMPLATE_ATTRIBUTE, uriTemplate);
 			return uri(uriBuilderFactory.expand(uriTemplate, uriVariables));
 		}
 
@@ -203,13 +205,6 @@ class DefaultWebClient implements WebClient {
 			return this.cookies;
 		}
 
-		private Map<String, Object> getAttributes() {
-			if (this.attributes == null) {
-				this.attributes = new LinkedHashMap<>(4);
-			}
-			return this.attributes;
-		}
-
 		@Override
 		public DefaultRequestBodyUriSpec header(String headerName, String... headerValues) {
 			for (String headerValue : headerValues) {
@@ -227,14 +222,14 @@ class DefaultWebClient implements WebClient {
 
 		@Override
 		public RequestBodySpec attribute(String name, Object value) {
-			getAttributes().put(name, value);
+			this.attributes.put(name, value);
 			return this;
 		}
 
 		@Override
 		public RequestBodySpec attributes(Consumer<Map<String, Object>> attributesConsumer) {
 			Assert.notNull(attributesConsumer, "'attributesConsumer' must not be null");
-			attributesConsumer.accept(getAttributes());
+			attributesConsumer.accept(this.attributes);
 			return this;
 		}
 
@@ -327,10 +322,10 @@ class DefaultWebClient implements WebClient {
 
 		private ClientRequest.Builder initRequestBuilder() {
 			URI uri = this.uri != null ? this.uri : uriBuilderFactory.expand("");
-			return ClientRequest.method(this.httpMethod, uri)
+			return ClientRequest.create(this.httpMethod, uri)
 					.headers(headers -> headers.addAll(initHeaders()))
 					.cookies(cookies -> cookies.addAll(initCookies()))
-					.attributes(attributes -> attributes.putAll(getAttributes()));
+					.attributes(attributes -> attributes.putAll(this.attributes));
 		}
 
 		private HttpHeaders initHeaders() {
@@ -408,8 +403,9 @@ class DefaultWebClient implements WebClient {
 		@Override
 		@SuppressWarnings("unchecked")
 		public <T> Mono<T> bodyToMono(Class<T> bodyType) {
+			// Use bodyToMono (vs BodyExtractors) to ensure proper handling of Void.class...
 			return this.responseMono.flatMap(
-					response -> bodyToPublisher(response, BodyExtractors.toMono(bodyType),
+					response -> bodyToPublisher(response, response.bodyToMono(bodyType),
 							this::monoThrowableToMono));
 		}
 
@@ -417,7 +413,7 @@ class DefaultWebClient implements WebClient {
 		@SuppressWarnings("unchecked")
 		public <T> Mono<T> bodyToMono(ParameterizedTypeReference<T> typeReference) {
 			return this.responseMono.flatMap(
-					response -> bodyToPublisher(response, BodyExtractors.toMono(typeReference),
+					response -> bodyToPublisher(response, response.bodyToMono(typeReference),
 							this::monoThrowableToMono));
 		}
 
@@ -428,14 +424,14 @@ class DefaultWebClient implements WebClient {
 		@Override
 		public <T> Flux<T> bodyToFlux(Class<T> elementType) {
 			return this.responseMono.flatMapMany(
-					response -> bodyToPublisher(response, BodyExtractors.toFlux(elementType),
+					response -> bodyToPublisher(response, response.bodyToFlux(elementType),
 							this::monoThrowableToFlux));
 		}
 
 		@Override
 		public <T> Flux<T> bodyToFlux(ParameterizedTypeReference<T> typeReference) {
 			return this.responseMono.flatMapMany(
-					response -> bodyToPublisher(response, BodyExtractors.toFlux(typeReference),
+					response -> bodyToPublisher(response, response.bodyToFlux(typeReference),
 							this::monoThrowableToFlux));
 		}
 
@@ -444,15 +440,14 @@ class DefaultWebClient implements WebClient {
 		}
 
 		private <T extends Publisher<?>> T bodyToPublisher(ClientResponse response,
-				BodyExtractor<T, ? super ClientHttpResponse> extractor,
-				Function<Mono<? extends Throwable>, T> errorFunction) {
+				T bodyPublisher, Function<Mono<? extends Throwable>, T> errorFunction) {
 
 			return this.statusHandlers.stream()
 					.filter(statusHandler -> statusHandler.test(response.statusCode()))
 					.findFirst()
 					.map(statusHandler -> statusHandler.apply(response))
 					.map(errorFunction::apply)
-					.orElse(response.body(extractor));
+					.orElse(bodyPublisher);
 		}
 
 		private static Mono<WebClientResponseException> createResponseException(ClientResponse response) {

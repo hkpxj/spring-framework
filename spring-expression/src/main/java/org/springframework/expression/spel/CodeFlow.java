@@ -18,9 +18,10 @@ package org.springframework.expression.spel;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
-import java.util.Stack;
 
 import org.springframework.asm.ClassWriter;
 import org.springframework.asm.MethodVisitor;
@@ -57,7 +58,7 @@ public class CodeFlow implements Opcodes {
 	 * sub-expressions like the expressions for the argument values in a method invocation
 	 * expression.
 	 */
-	private final Stack<ArrayList<String>> compilationScopes;
+	private final Deque<List<String>> compilationScopes;
 
 	/**
 	 * As SpEL ast nodes are called to generate code for the main evaluation method
@@ -97,7 +98,7 @@ public class CodeFlow implements Opcodes {
 	public CodeFlow(String className, ClassWriter classWriter) {
 		this.className = className;
 		this.classWriter = classWriter;
-		this.compilationScopes = new Stack<ArrayList<String>>();
+		this.compilationScopes = new ArrayDeque<>();
 		this.compilationScopes.add(new ArrayList<String>());
 	}
 
@@ -127,7 +128,7 @@ public class CodeFlow implements Opcodes {
 	 */
 	public void pushDescriptor(@Nullable String descriptor) {
 		if (descriptor != null) {
-			this.compilationScopes.peek().add(descriptor);
+			this.compilationScopes.element().add(descriptor);
 		}
 	}
 
@@ -477,20 +478,14 @@ public class CodeFlow implements Opcodes {
 			}
 		}
 		if (clazz.isPrimitive()) {
-			if (clazz == Void.TYPE) {
-				sb.append('V');
-			}
-			else if (clazz == Integer.TYPE) {
-				sb.append('I');
-			}
-			else if (clazz == Boolean.TYPE) {
+			if (clazz == Boolean.TYPE) {
 				sb.append('Z');
+			}
+			else if (clazz == Byte.TYPE) {
+				sb.append('B');
 			}
 			else if (clazz == Character.TYPE) {
 				sb.append('C');
-			}
-			else if (clazz == Long.TYPE) {
-				sb.append('J');
 			}
 			else if (clazz == Double.TYPE) {
 				sb.append('D');
@@ -498,11 +493,17 @@ public class CodeFlow implements Opcodes {
 			else if (clazz == Float.TYPE) {
 				sb.append('F');
 			}
-			else if (clazz == Byte.TYPE) {
-				sb.append('B');
+			else if (clazz == Integer.TYPE) {
+				sb.append('I');
+			}
+			else if (clazz == Long.TYPE) {
+				sb.append('J');
 			}
 			else if (clazz == Short.TYPE) {
 				sb.append('S');
+			}
+			else if (clazz == Void.TYPE) {
+				sb.append('V');
 			}
 		}
 		else {
@@ -1014,6 +1015,21 @@ public class CodeFlow implements Opcodes {
 	public interface ClinitAdder {
 
 		void generateCode(MethodVisitor mv, CodeFlow codeflow);
+	}
+
+	public static String toBoxedDescriptor(String primitiveDescriptor) {
+		switch (primitiveDescriptor.charAt(0)) {
+			case 'I': return "Ljava/lang/Integer";
+			case 'J': return "Ljava/lang/Long";
+			case 'F': return "Ljava/lang/Float";
+			case 'D': return "Ljava/lang/Double";
+			case 'B': return "Ljava/lang/Byte";
+			case 'C': return "Ljava/lang/Character";
+			case 'S': return "Ljava/lang/Short";
+			case 'Z': return "Ljava/lang/Boolean";
+			default:
+				throw new IllegalArgumentException("Unexpected non primitive descriptor "+primitiveDescriptor);
+		}	
 	}
 
 }

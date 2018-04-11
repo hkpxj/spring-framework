@@ -151,12 +151,12 @@ Below is example configuration with a `WebApplicationContext` hierarchy:
 
 		@Override
 		protected Class<?>[] getRootConfigClasses() {
-			return new Class<?[] { RootConfig.class };
+			return new Class<?>[] { RootConfig.class };
 		}
 
 		@Override
 		protected Class<?>[] getServletConfigClasses() {
-			return new Class<?[] { App1Config.class };
+			return new Class<?>[] { App1Config.class };
 		}
 
 		@Override
@@ -219,10 +219,11 @@ If an application context hierarchy is not required, applications may configure 
 [.small]#<<web-reactive.adoc#webflux-special-bean-types,Same in Spring WebFlux>>#
 
 The `DispatcherServlet` delegates to special beans to process requests and render the
-appropriate responses. By "special beans" we mean Spring-managed Object instances that
-implement one of the framework contracts listed in the table below.
-Spring MVC provides built-in implementations of these contracts but you can also
-customize, extend, or replace them.
+appropriate responses. By "special beans" we mean Spring-managed, Object instances that
+implement WebFlux framework contracts. Those usually come with built-in contracts but
+you can customize their properties, extend or replace them.
+
+The table below lists the special beans detected by the `DispatcherHandler`:
 
 [[mvc-webappctx-special-beans-tbl]]
 [cols="1,2", options="header"]
@@ -273,28 +274,29 @@ customize, extend, or replace them.
 
 
 [[mvc-servlet-config]]
-=== Framework Config
+=== Web MVC Config
 [.small]#<<web-reactive.adoc#webflux-framework-config,Same in Spring WebFlux>>#
 
-For each type of special bean, the `DispatcherServlet` checks for the `WebApplicationContext` first.
-If there are no matching bean types, it falls back on the default types listed in
+Applications can declare the infrastructure beans listed in <<mvc-servlet-special-bean-types>>
+that are required to process requests. The `DispatcherServlet` checks the
+`WebApplicationContext` for each special bean. If there are no matching bean types,
+it falls back on the default types listed in
 https://github.com/spring-projects/spring-framework/blob/master/spring-webmvc/src/main/resources/org/springframework/web/servlet/DispatcherServlet.properties[DispatcherServlet.properties].
 
-Applications can declare the special beans they wish to have. Most applications however
-will find a better starting point in the MVC Java config or the MVC XML namespace which
-provide a higher level configuration API that in turn make the necessary bean declarations.
-See <<mvc-config>> for more details.
+In most cases the <<mvc-config>> is the best starting point. It declares the required
+beans in either Java or XML, and provides a higher level configuration callback API to
+customize it.
 
 [NOTE]
 ====
 Spring Boot relies on the MVC Java config to configure Spring MVC and also
-provides many extra convenient options on top.
+provides many extra convenient options.
 ====
 
 
 
 [[mvc-container-config]]
-=== Container Config
+=== Servlet Config
 
 In a Servlet 3.0+ environment, you have the option of configuring the Servlet container
 programmatically as an alternative or in combination with a `web.xml` file. Below is an
@@ -340,7 +342,7 @@ This is recommended for applications that use Java-based Spring configuration:
 
 		@Override
 		protected Class<?>[] getServletConfigClasses() {
-			return new Class[] { MyWebConfig.class };
+			return new Class<?>[] { MyWebConfig.class };
 		}
 
 		@Override
@@ -477,7 +479,7 @@ initialization parameters ( `init-param` elements) to the Servlet declaration in
 All `HandlerMapping` implementations supports handler interceptors that are useful when
 you want to apply specific functionality to certain requests, for example, checking for
 a principal. Interceptors must implement `HandlerInterceptor` from the
-`org.springframework .web .servlet` package with three methods that should provide enough
+`org.springframework.web.servlet` package with three methods that should provide enough
 flexibility to do all kinds of pre-processing and post-processing:
 
 * `preHandle(..)` -- __before__ the actual handler is executed
@@ -496,7 +498,7 @@ configure interceptors. You can also register them directly via setters on indiv
 `HandlerMapping` implementations.
 
 Note that `postHandle` is less useful with `@ResponseBody` and `ResponseEntity` methods for
-which a the response is written and committed within the `HandlerAdapter` and before
+which the response is written and committed within the `HandlerAdapter` and before
 `postHandle`. That means its too late to make any changes to the response such as adding
 an extra header. For such scenarios you can implement `ResponseBodyAdvice` and either
 declare it as an <<mvc-ann-controller-advice>> bean or configure it directly on
@@ -504,15 +506,116 @@ declare it as an <<mvc-ann-controller-advice>> bean or configure it directly on
 
 
 
+[[mvc-exceptionhandlers]]
+=== Exceptions
+[.small]#<<web-reactive.adoc#webflux-dispatcher-exceptions,Same in Spring WebFlux>>#
+
+If an exception occurs during request mapping or is thrown from a request handler such as
+an `@Controller`, the `DispatcherServlet` delegates to a chain of `HandlerExceptionResolver`
+beans to resolve the exception and provide alternative handling, which typically is an
+error response.
+
+The table below lists the available `HandlerExceptionResolver` implementations:
+
+[cols="1,2", options="header"]
+.HandlerExceptionResolver implementations
+|===
+| HandlerExceptionResolver | Description
+
+| `SimpleMappingExceptionResolver`
+| A mapping between exception class names and error view names. Useful for rendering
+  error pages in a browser application.
+
+| {api-spring-framework}/web/servlet/mvc/support/DefaultHandlerExceptionResolver.html[DefaultHandlerExceptionResolver]
+| Resolves exceptions raised by Spring MVC and maps them to HTTP status codes.
+  Also see alternative `ResponseEntityExceptionHandler` and <<mvc-ann-rest-exceptions>>.
+
+| `ResponseStatusExceptionResolver`
+| Resolves exceptions with the `@ResponseStatus` annotation and maps them to HTTP status
+  codes based on the value in the annotation.
+
+| `ExceptionHandlerExceptionResolver`
+| Resolves exceptions by invoking an `@ExceptionHandler` method in an `@Controller` or an
+  `@ControllerAdvice` class. See <<mvc-ann-exceptionhandler,@ExceptionHandler methods>>.
+|===
+
+
+[[mvc-excetionhandlers-handling]]
+==== Chain of resolvers
+
+You can form an exception resolver chain simply by declaring multiple `HandlerExceptionResolver`
+beans in your Spring configuration and setting their `order` properties as needed.
+The higher the order property, the later the exception resolver is positioned.
+
+The contract of `HandlerExceptionResolver` specifies that it can return:
+
+* `ModelAndView` that points to an error view.
+* Empty `ModelAndView` if the exception was handled within the resolver.
+* `null` if the exception remains unresolved, for subsequent resolvers to try; and if the
+exception remains at the end, it is allowed to bubble up to the Servlet container.
+
+The <<mvc-config>> automatically declares built-in resolvers for default Spring MVC
+exceptions, for `@ResponseStatus` annotated exceptions, and for support of
+`@ExceptionHandler` methods. You can customize that list or replace it.
+
+
+[[mvc-ann-customer-servlet-container-error-page]]
+==== Container error page
+
+If an exception remains unresolved by any `HandlerExceptionResolver` and is therefore
+left to propagate, or if the response status is set to an error status (i.e. 4xx, 5xx),
+Servlet containers may render a default error page in HTML. To customize the default
+error page of the container, you can declare an error page mapping in `web.xml`:
+
+[source,xml,indent=0]
+[subs="verbatim,quotes"]
+----
+	<error-page>
+		<location>/error</location>
+	</error-page>
+----
+
+Given the above, when an exception bubbles up, or the response has an error status, the
+Servlet container makes an ERROR dispatch within the container to the configured URL
+(e.g. "/error"). This is then processed by the `DispatcherServlet`, possibly mapping it
+to an `@Controller` which could be implemented to return an error view name with a model
+or to render a JSON response as shown below:
+
+[source,java,indent=0]
+[subs="verbatim,quotes"]
+----
+	@RestController
+	public class ErrorController {
+
+		@RequestMapping(path = "/error")
+		public Map<String, Object> handle(HttpServletRequest request) {
+			Map<String, Object> map = new HashMap<String, Object>();
+			map.put("status", request.getAttribute("javax.servlet.error.status_code"));
+			map.put("reason", request.getAttribute("javax.servlet.error.message"));
+			return map;
+		}
+	}
+----
+
+[TIP]
+====
+The Servlet API does not provide a way to create error page mappings in Java. You can
+however use both an `WebApplicationInitializer` and a minimal `web.xml`.
+====
+
+
+
+
 [[mvc-viewresolver]]
 === View Resolution
+[.small]#<<web-reactive.adoc#webflux-viewresolution,Same in Spring WebFlux>>#
 
 Spring MVC defines the `ViewResolver` and `View` interfaces that enable you to render
 models in a browser without tying you to a specific view technology. `ViewResolver`
 provides a mapping between view names and actual views. `View` addresses the preparation
 of data before handing over to a specific view technology.
 
-This table below provides more details on the `ViewResolver` hierarchy:
+The table below provides more details on the `ViewResolver` hierarchy:
 
 [[mvc-view-resolvers-tbl]]
 .ViewResolver implementations
@@ -559,27 +662,35 @@ This table below provides more details on the `ViewResolver` hierarchy:
   request file name or `Accept` header. See <<mvc-multiple-representations>>.
 |===
 
-You chain view resolvers by configuring more than one resolver and, if necessary, by
+
+[[mvc-viewresolver-handling]]
+==== Handling
+[.small]#<<web-reactive.adoc#webflux-viewresolution-handling,Same in Spring WebFlux>>#
+
+You chain view resolvers by declaring more than one resolver beans and, if necessary, by
 setting the `order` property to specify ordering. Remember, the higher the order property,
 the later the view resolver is positioned in the chain.
 
-The contract of a view resolver specifies that a view resolver __can__ return null to
-indicate the view could not be found. However in the case of JSPs, and
-`InternalResourceViewResolver`, the only way to figure out if a JSP exists is to
-perform a dispatch through `RequestDispatcher`. There an `InternalResourceViewResolver`
-must always be configured last in the order.
+The contract of a `ViewResolver` specifies that it __can__ return null to indicate the
+view could not be found. However in the case of JSPs, and `InternalResourceViewResolver`,
+the only way to figure out if a JSP exists is to perform a dispatch through
+`RequestDispatcher`. Therefore an `InternalResourceViewResolver` must always be configured
+to be last in the overall order of view resolvers.
 
-See <<mvc-config-view-controller,View Controllers>> under <<mvc-config>> for details on
-how to configure view resolution. Also see<<mvc-view>> for more details on supported
-view technologies.
+To configure view resolution is as simple as adding `ViewResolver` beans to your Spring
+configuration. The <<mvc-config>> provides provides a dedicated configuration API for
+<<mvc-config-view-resolvers>> and also for adding logic-less
+<<mvc-config-view-controller,View Controllers>> which are useful for HTML template
+rendering without controller logic.
 
 
 [[mvc-redirecting-redirect-prefix]]
-==== Redirect
+==== Redirecting
+[.small]#<<web-reactive.adoc#webflux-redirecting-redirect-prefix,Same in Spring WebFlux>>#
 
 The special `redirect:` prefix in a view name allows you to perform a redirect. The
-`UrlBasedViewResolver` (and subclasses) will recognize this as a special indication that a
-redirect is needed. The rest of the view name will be treated as the redirect URL.
+`UrlBasedViewResolver` (and sub-classes) recognize this as an instruction that a
+redirect is needed. The rest of the view name is the redirect URL.
 
 The net effect is the same as if the controller had returned a `RedirectView`, but now
 the controller itself can simply operate in terms of logical view names. A logical view
@@ -592,7 +703,7 @@ value takes precedence over the response status set by `RedirectView`.
 
 
 [[mvc-redirecting-forward-prefix]]
-==== Forward
+==== Forwarding
 
 It is also possible to use a special `forward:` prefix for view names that are
 ultimately resolved by `UrlBasedViewResolver` and subclasses. This creates an
@@ -605,6 +716,7 @@ Servlet/JSP engine. Note that you may also chain multiple view resolvers, instea
 
 [[mvc-multiple-representations]]
 ==== Content negotiation
+[.small]#<<web-reactive.adoc#webflux-multiple-representations,Same in Spring WebFlux>>#
 
 {api-spring-framework}/web/servlet/view/ContentNegotiatingViewResolver.html[ContentNegotiatingViewResolver]
 does not resolve views itself but rather delegates
@@ -696,7 +808,7 @@ maximum age. Find below an example of defining a `CookieLocaleResolver`.
 .CookieLocaleResolver properties
 [cols="1,1,4"]
 |===
-| Property| Default| Description
+| Property | Default | Description
 
 | cookieName
 | classname + LOCALE
@@ -839,7 +951,7 @@ alter the request's theme. The following theme resolvers are provided by Spring:
 .ThemeResolver implementations
 [cols="1,4"]
 |===
-| Class| Description
+| Class | Description
 
 | `FixedThemeResolver`
 | Selects a fixed theme, set using the `defaultThemeName` property.
@@ -885,11 +997,27 @@ have `commons-fileupload` as a dependency on your classpath.
 [[mvc-multipart-resolver-standard]]
 ==== Servlet 3.0
 
-To use Servlet 3.0 multipart support, you need to register the `DispatcherServlet`
-accordingly. In programmatic Servlet registration, set a `MultipartConfigElement` on the
-Servlet registration. In `web.xml`, add a `"<multipart-config>"` section. Configuration
-settings such as maximum sizes or storage locations need to be applied at this level
-since Servlet 3.0 API does not make it possible for the `MultipartResolver` to do so.
+Servlet 3.0 multipart parsing needs to be enabled through Servlet container configuration:
+
+* in Java, set a `MultipartConfigElement` on the Servlet registration.
+* in `web.xml`, add a `"<multipart-config>"` section to the servlet declaration.
+
+[source,java,indent=0]
+[subs="verbatim,quotes"]
+----
+	public class AppInitializer extends AbstractAnnotationConfigDispatcherServletInitializer {
+
+		// ...
+
+		@Override
+		protected void customizeRegistration(ServletRegistration.Dynamic registration) {
+
+			// Optionally also set maxFileSize, maxRequestSize, fileSizeThreshold
+			registration.setMultipartConfig(new MultipartConfigElement("/tmp"));
+		}
+
+	}
+----
 
 Once the Servlet 3.0 configuration is in place, simply add a bean of type
 `StandardServletMultipartResolver` with the name `multipartResolver`.
@@ -899,6 +1027,7 @@ Once the Servlet 3.0 configuration is in place, simply add a bean of type
 
 [[filters]]
 == Filters
+[.small]#<<web-reactive.adoc#webflux-filters,Same in Spring WebFlux>>#
 
 The `spring-web` module provides some useful filters.
 
@@ -918,8 +1047,9 @@ available through the `ServletRequest.getParameter{asterisk}()` family of method
 
 
 
-[[filters-forwarded-headers]]
+[[webflux-filters-forwarded-headers]]
 === Forwarded Headers
+[.small]#<<web-reactive.adoc#webflux-filters-forwarded-headers,Same in Spring WebFlux>>#
 
 As a request goes through proxies such as load balancers the host, port, and
 scheme may change presenting a challenge for applications that need to create links
@@ -959,12 +1089,13 @@ See <<mvc-httpcaching-shallowetag>> for more details.
 
 [[filters-cors]]
 === CORS
+[.small]#<<web-reactive.adoc#webflux-filters-cors,Same in Spring WebFlux>>#
 
 Spring MVC provides fine-grained support for CORS configuration through annotations on
 controllers. However when used with Spring Security it is advisable to rely on the built-in
 `CorsFilter` that must be ordered ahead of Spring Security's chain of filters.
 
-See the section on <<mvc-cors>> and the <<mvc-cors-filter,CorsFilter>> for more details.
+See the section on <<mvc-cors>> and the <<mvc-cors-filter>> for more details.
 
 
 
@@ -1050,10 +1181,10 @@ The XML configuration equivalent:
 	</beans>
 ----
 
-`@RestController` is a composed annotation that is itself annotated with
-`@Controller` and `@ResponseBody` indicating a controller whose every method inherits the type-level
-`@ResponseBody` annotation and therefore writes to the response body (vs model-and-vew
-rendering).
+`@RestController` is a <<core.adoc#beans-meta-annotations,composed annotation>> that is
+itself meta-annotated with `@Controller` and `@ResponseBody` indicating a controller whose
+every method inherits the type-level `@ResponseBody` annotation and therefore writes
+directly to the response body vs view resolution and rendering with an HTML template.
 
 
 [[mvc-ann-requestmapping-proxying]]
@@ -1087,10 +1218,12 @@ There are also HTTP method specific shortcut variants of `@RequestMapping`:
 - `@DeleteMapping`
 - `@PatchMapping`
 
-The shortcut variants are
-https://github.com/spring-projects/spring-framework/wiki/Spring-Annotation-Programming-Model#composed-annotations[composed annotations]
--- themselves annotated with `@RequestMapping`. They are commonly used at the method level.
-At the class level an `@RequestMapping` is more useful for expressing shared mappings.
+The above are <<mvc-ann-requestmapping-composed>> that are provided out of the box
+because arguably most controller methods should be mapped to a specific HTTP method vs
+using `@RequestMapping` which by default matches to all HTTP methods. At the same an
+`@RequestMapping` is still needed at the class level to express shared mappings.
+
+Below is an example with type and method level mappings:
 
 [source,java,indent=0]
 [subs="verbatim,quotes"]
@@ -1292,7 +1425,7 @@ will overrides rather than extend the class level declaration.
 [TIP]
 ====
 `MediaType` provides constants for commonly used media types -- e.g.
-`APPLICATION_JSON_VALUE`, `APPLICATION_JSON_UTF8_VALUE`.
+`APPLICATION_JSON_VALUE`, `APPLICATION_XML_VALUE`.
 ====
 
 
@@ -1316,6 +1449,14 @@ content types that a controller method produces:
 The media type can specify a character set. Negated expressions are supported -- e.g.
 `!text/plain` means any content type other than "text/plain".
 
+[NOTE]
+====
+For JSON content type, the UTF-8 charset should be specified even if
+https://tools.ietf.org/html/rfc7159#section-11[RFC7159]
+clearly states that "no charset parameter is defined for this registration" because some
+browsers require it for interpreting correctly UTF-8 special characters.
+====
+
 You can declare a shared produces attribute at the class level. Unlike most other request
 mapping attributes however when used at the class level, a method-level produces attribute
 will overrides rather than extend the class level declaration.
@@ -1323,7 +1464,7 @@ will overrides rather than extend the class level declaration.
 [TIP]
 ====
 `MediaType` provides constants for commonly used media types -- e.g.
-`APPLICATION_JSON_VALUE`, `APPLICATION_JSON_UTF8_VALUE`.
+`APPLICATION_JSON_UTF8_VALUE`, `APPLICATION_XML_VALUE`.
 ====
 
 
@@ -1390,6 +1531,27 @@ supported HTTP methods for example by using the HTTP method specific variants --
 is not necessary in the common case.
 
 
+[[mvc-ann-requestmapping-composed]]
+==== Custom Annotations
+[.small]#<<web-reactive.adoc#mvc-ann-requestmapping-head-options,Same in Spring WebFlux>>#
+
+Spring MVC supports the use of <<core.adoc#beans-meta-annotations,composed annotations>>
+for request mapping. Those are annotations that are themselves meta-annotated with
+`@RequestMapping` and composed to redeclare a subset (or all) of the `@RequestMapping`
+attributes with a narrower, more specific purpose.
+
+`@GetMapping`, `@PostMapping`, `@PutMapping`, `@DeleteMapping`, and `@PatchMapping` are
+examples of composed annotations. They're provided out of the box because arguably most
+controller methods should be mapped to a specific HTTP method vs using `@RequestMapping`
+which by default matches to all HTTP methods. If you need an example of composed
+annotations, look at how those are declared.
+
+Spring MVC also supports custom request mapping attributes with custom request matching
+logic. This is a more advanced option that requires sub-classing
+`RequestMappingHandlerMapping` and overriding the `getCustomMethodCondition` method where
+you can check the custom attribute and return your own `RequestCondition`.
+
+
 
 [[mvc-ann-methods]]
 === Handler Methods
@@ -1412,126 +1574,125 @@ etc, and is equivalent to `required=false`.
 
 [cols="1,2", options="header"]
 |===
-|Controller method argument|Description
+| Controller method argument | Description
 
-|`WebRequest`, `NativeWebRequest`
-|Generic access to request parameters, request & session attributes, without direct
-use of the Servlet API.
+| `WebRequest`, `NativeWebRequest`
+| Generic access to request parameters, request & session attributes, without direct
+  use of the Servlet API.
 
-|`javax.servlet.ServletRequest`, `javax.servlet.ServletResponse`
-|Choose any specific request or response type -- e.g. `ServletRequest`, `HttpServletRequest`,
-or Spring's `MultipartRequest`, `MultipartHttpServletRequest`.
+| `javax.servlet.ServletRequest`, `javax.servlet.ServletResponse`
+| Choose any specific request or response type -- e.g. `ServletRequest`, `HttpServletRequest`,
+  or Spring's `MultipartRequest`, `MultipartHttpServletRequest`.
 
-|`javax.servlet.http.HttpSession`
-|Enforces the presence of a session. As a consequence, such an argument is never `null`. +
-**Note:** Session access is not thread-safe. Consider setting the
-``RequestMappingHandlerAdapter``'s "synchronizeOnSession" flag to "true" if multiple
-requests are allowed to access a session concurrently.
+| `javax.servlet.http.HttpSession`
+| Enforces the presence of a session. As a consequence, such an argument is never `null`. +
+  **Note:** Session access is not thread-safe. Consider setting the
+  ``RequestMappingHandlerAdapter``'s "synchronizeOnSession" flag to "true" if multiple
+  requests are allowed to access a session concurrently.
 
-|`javax.servlet.http.PushBuilder`
-|Servlet 4.0 push builder API for programmatic HTTP/2 resource pushes.
- Note that per Servlet spec, the injected `PushBuilder` instance can be null if the client
- does not support that HTTP/2 feature.
+| `javax.servlet.http.PushBuilder`
+| Servlet 4.0 push builder API for programmatic HTTP/2 resource pushes.
+  Note that per Servlet spec, the injected `PushBuilder` instance can be null if the client
+  does not support that HTTP/2 feature.
 
-|`java.security.Principal`
-|Currently authenticated user; possibly a specific `Principal` implementation class if known.
+| `java.security.Principal`
+| Currently authenticated user; possibly a specific `Principal` implementation class if known.
 
-|`HttpMethod`
-|The HTTP method of the request.
+| `HttpMethod`
+| The HTTP method of the request.
 
-|`java.util.Locale`
-|The current request locale, determined by the most specific `LocaleResolver` available, in
-effect, the configured `LocaleResolver`/`LocaleContextResolver`.
+| `java.util.Locale`
+| The current request locale, determined by the most specific `LocaleResolver` available, in
+  effect, the configured `LocaleResolver`/`LocaleContextResolver`.
 
-|Java 6+: `java.util.TimeZone` +
-Java 8+: `java.time.ZoneId`
-|The time zone associated with the current request, as determined by a `LocaleContextResolver`.
+| `java.util.TimeZone` + `java.time.ZoneId`
+| The time zone associated with the current request, as determined by a `LocaleContextResolver`.
 
-|`java.io.InputStream`, `java.io.Reader`
-|For access to the raw request body as exposed by the Servlet API.
+| `java.io.InputStream`, `java.io.Reader`
+| For access to the raw request body as exposed by the Servlet API.
 
-|`java.io.OutputStream`, `java.io.Writer`
-|For access to the raw response body as exposed by the Servlet API.
+| `java.io.OutputStream`, `java.io.Writer`
+| For access to the raw response body as exposed by the Servlet API.
 
-|`@PathVariable`
-|For access to URI template variables. See <<mvc-ann-requestmapping-uri-templates>>.
+| `@PathVariable`
+| For access to URI template variables. See <<mvc-ann-requestmapping-uri-templates>>.
 
-|`@MatrixVariable`
-|For access to name-value pairs in URI path segments. See <<mvc-ann-matrix-variables>>.
+| `@MatrixVariable`
+| For access to name-value pairs in URI path segments. See <<mvc-ann-matrix-variables>>.
 
-|`@RequestParam`
-|For access to Servlet request parameters. Parameter values are converted to the declared
-method argument type. See <<mvc-ann-requestparam>>.
+| `@RequestParam`
+| For access to Servlet request parameters. Parameter values are converted to the declared
+  method argument type. See <<mvc-ann-requestparam>>.
 
-Note that use of `@RequestParam` is optional, e.g. to set its attributes.
-See "Any other argument" further below in this table.
+  Note that use of `@RequestParam` is optional, e.g. to set its attributes.
+  See "Any other argument" further below in this table.
 
-|`@RequestHeader`
-|For access to request headers. Header values are converted to the declared method argument
-type. See <<mvc-ann-requestheader>>.
+| `@RequestHeader`
+| For access to request headers. Header values are converted to the declared method argument
+  type. See <<mvc-ann-requestheader>>.
 
-|`@CookieValue`
-|For access to cookies. Cookies values are converted to the declared method argument
-type. See <<mvc-ann-cookievalue>>.
+| `@CookieValue`
+| For access to cookies. Cookies values are converted to the declared method argument
+  type. See <<mvc-ann-cookievalue>>.
 
-|`@RequestBody`
-|For access to the HTTP request body. Body content is converted to the declared method
-argument type using ``HttpMessageConverter``s. See <<mvc-ann-requestbody>>.
+| `@RequestBody`
+| For access to the HTTP request body. Body content is converted to the declared method
+  argument type using ``HttpMessageConverter``s. See <<mvc-ann-requestbody>>.
 
-|`HttpEntity<B>`
-|For access to request headers and body. The body is converted with ``HttpMessageConverter``s.
-See <<mvc-ann-httpentity>>.
+| `HttpEntity<B>`
+| For access to request headers and body. The body is converted with ``HttpMessageConverter``s.
+  See <<mvc-ann-httpentity>>.
 
-|`@RequestPart`
-|For access to a part in  a "multipart/form-data" request.
-See <<mvc-multipart-forms>>.
+| `@RequestPart`
+| For access to a part in  a "multipart/form-data" request.
+  See <<mvc-multipart-forms>>.
 
-|`java.util.Map`, `org.springframework.ui.Model`, `org.springframework.ui.ModelMap`
-|For access to the model that is used in HTML controllers and exposed to templates as
-part of view rendering.
+| `java.util.Map`, `org.springframework.ui.Model`, `org.springframework.ui.ModelMap`
+| For access to the model that is used in HTML controllers and exposed to templates as
+  part of view rendering.
 
-|`RedirectAttributes`
-|Specify attributes to use in case of a redirect -- i.e. to be appended to the query
-string, and/or flash attributes to be stored temporarily until the request after redirect.
-See <<mvc-redirecting-passing-data>> and <<mvc-flash-attributes>>.
+| `RedirectAttributes`
+| Specify attributes to use in case of a redirect -- i.e. to be appended to the query
+  string, and/or flash attributes to be stored temporarily until the request after redirect.
+  See <<mvc-redirecting-passing-data>> and <<mvc-flash-attributes>>.
 
-|`@ModelAttribute`
-|For access to an existing attribute in the model (instantiated if not present) with
-data binding and validation applied. See <<mvc-ann-modelattrib-method-args>> as well as
-<<mvc-ann-modelattrib-methods>> and <<mvc-ann-initbinder>>.
+| `@ModelAttribute`
+| For access to an existing attribute in the model (instantiated if not present) with
+  data binding and validation applied. See <<mvc-ann-modelattrib-method-args>> as well as
+  <<mvc-ann-modelattrib-methods>> and <<mvc-ann-initbinder>>.
 
-Note that use of `@ModelAttribute` is optional, e.g. to set its attributes.
-See "Any other argument" further below in this table.
+  Note that use of `@ModelAttribute` is optional, e.g. to set its attributes.
+  See "Any other argument" further below in this table.
 
-|`Errors`, `BindingResult`
-|For access to errors from validation and data binding for a command object
-(i.e. `@ModelAttribute` argument), or errors from the validation of an `@RequestBody` or
-`@RequestPart` arguments; an `Errors`, or `BindingResult` argument must be declared
-immediately after the validated method argument.
+| `Errors`, `BindingResult`
+| For access to errors from validation and data binding for a command object
+  (i.e. `@ModelAttribute` argument), or errors from the validation of an `@RequestBody` or
+  `@RequestPart` arguments; an `Errors`, or `BindingResult` argument must be declared
+  immediately after the validated method argument.
 
-|`SessionStatus` + class-level `@SessionAttributes`
-|For marking form processing complete which triggers cleanup of session attributes
-declared through a class-level `@SessionAttributes` annotation. See
-<<mvc-ann-sessionattributes>> for more details.
+| `SessionStatus` + class-level `@SessionAttributes`
+| For marking form processing complete which triggers cleanup of session attributes
+  declared through a class-level `@SessionAttributes` annotation. See
+  <<mvc-ann-sessionattributes>> for more details.
 
-|`UriComponentsBuilder`
-|For preparing a URL relative to the current request's host, port, scheme, context path, and
-the literal  part of the servlet mapping also taking into account `Forwarded` and
-`X-Forwarded-*` headers. See <<mvc-uri-building>>.
+| `UriComponentsBuilder`
+| For preparing a URL relative to the current request's host, port, scheme, context path, and
+  the literal  part of the servlet mapping also taking into account `Forwarded` and
+ `X-Forwarded-*` headers. See <<mvc-uri-building>>.
 
-|`@SessionAttribute`
-|For access to any session attribute; in contrast to model attributes stored in the session
-as a result of a class-level `@SessionAttributes` declaration. See
-<<mvc-ann-sessionattribute>> for more details.
+| `@SessionAttribute`
+| For access to any session attribute; in contrast to model attributes stored in the session
+  as a result of a class-level `@SessionAttributes` declaration. See
+  <<mvc-ann-sessionattribute>> for more details.
 
-|`@RequestAttribute`
-|For access to request attributes. See <<mvc-ann-requestattrib>> for more details.
+| `@RequestAttribute`
+| For access to request attributes. See <<mvc-ann-requestattrib>> for more details.
 
-|Any other argument
-|If a method argument is not matched to any of the above, by default it is resolved as
-an `@RequestParam` if it is a simple type, as determined by
-{api-spring-framework}/beans/BeanUtils.html#isSimpleProperty-java.lang.Class-[BeanUtils#isSimpleProperty],
-or as an `@ModelAttribute` otherwise.
+| Any other argument
+| If a method argument is not matched to any of the above, by default it is resolved as
+  an `@RequestParam` if it is a simple type, as determined by
+  {api-spring-framework}/beans/BeanUtils.html#isSimpleProperty-java.lang.Class-[BeanUtils#isSimpleProperty],
+  or as an `@ModelAttribute` otherwise.
 |===
 
 
@@ -1544,93 +1705,96 @@ supported for all return values, see below for more details.
 
 [cols="1,2", options="header"]
 |===
-|Controller method return value|Description
+| Controller method return value | Description
 
-|`@ResponseBody`
-|The return value is converted through ``HttpMessageConverter``s and written to the
-response. See <<mvc-ann-responsebody>>.
+| `@ResponseBody`
+| The return value is converted through ``HttpMessageConverter``s and written to the
+  response. See <<mvc-ann-responsebody>>.
 
-|`HttpEntity<B>`, `ResponseEntity<B>`
-|The return value specifies the full response including HTTP headers and body be converted
-through ``HttpMessageConverter``s and written to the response.
-See <<mvc-ann-responseentity>>.
+| `HttpEntity<B>`, `ResponseEntity<B>`
+| The return value specifies the full response including HTTP headers and body be converted
+  through ``HttpMessageConverter``s and written to the response.
+  See <<mvc-ann-responseentity>>.
 
-|`HttpHeaders`
-|For returning a response with headers and no body.
+| `HttpHeaders`
+| For returning a response with headers and no body.
 
-|`String`
-|A view name to be resolved with ``ViewResolver``'s and used together with the implicit
-model -- determined through command objects and `@ModelAttribute` methods. The handler
-method may also programmatically enrich the model by declaring a `Model` argument (see
-above).
+| `String`
+| A view name to be resolved with ``ViewResolver``'s and used together with the implicit
+  model -- determined through command objects and `@ModelAttribute` methods. The handler
+  method may also programmatically enrich the model by declaring a `Model` argument
+  (see above).
 
-|`View`
-|A `View` instance to use for rendering together with the implicit model -- determined
-through command objects and `@ModelAttribute` methods. The handler method may also
-programmatically enrich the model by declaring a `Model` argument (see above).
+| `View`
+| A `View` instance to use for rendering together with the implicit model -- determined
+  through command objects and `@ModelAttribute` methods. The handler method may also
+  programmatically enrich the model by declaring a `Model` argument (see above).
 
-|`java.util.Map`, `org.springframework.ui.Model`
-|Attributes to be added to the implicit model with the view name implicitly determined
-through a `RequestToViewNameTranslator`.
+| `java.util.Map`, `org.springframework.ui.Model`
+| Attributes to be added to the implicit model with the view name implicitly determined
+  through a `RequestToViewNameTranslator`.
 
-|`@ModelAttribute`
-|An attribute to be added to the model with the view name implicitly determined through
-a `RequestToViewNameTranslator`.
+| `@ModelAttribute`
+| An attribute to be added to the model with the view name implicitly determined through
+  a `RequestToViewNameTranslator`.
 
-Note that `@ModelAttribute` is optional. See "Any other return value" further below in
-this table.
+  Note that `@ModelAttribute` is optional. See "Any other return value" further below in
+  this table.
 
-|`ModelAndView` object
-|The view and model attributes to use, and optionally a response status.
+| `ModelAndView` object
+| The view and model attributes to use, and optionally a response status.
 
-|`void`
-|A method with a `void` return type (or `null` return value) is considered to have fully
-handled the response if it also has a `ServletResponse`, or an `OutputStream` argument, or an
-`@ResponseStatus` annotation. The same is true also if the controller has made a positive
-ETag or lastModified timestamp check (see <<mvc-caching-etag-lastmodified>> for details).
+| `void`
+| A method with a `void` return type (or `null` return value) is considered to have fully
+  handled the response if it also has a `ServletResponse`, or an `OutputStream` argument, or
+  an `@ResponseStatus` annotation. The same is true also if the controller has made a positive
+  ETag or lastModified timestamp check (see <<mvc-caching-etag-lastmodified>> for details).
 
-If none of the above is true, a `void` return type may also indicate "no response body" for
-REST controllers, or default view name selection for HTML controllers.
+  If none of the above is true, a `void` return type may also indicate "no response body" for
+  REST controllers, or default view name selection for HTML controllers.
 
-|`Callable<V>`
-|Produce any of the above return values asynchronously in a Spring MVC managed thread.
+| `DeferredResult<V>`
+| Produce any of the above return values asynchronously from any thread -- e.g. possibly as a
+  result of some event or callback. See <<mvc-ann-async>> and
+  <<mvc-ann-async-deferredresult>>.
 
-|`DeferredResult<V>`
-|Produce any of the above return values asynchronously from any thread -- e.g. possibly as a
-result of some event or callback.
+| `Callable<V>`
+| Produce any of the above return values asynchronously in a Spring MVC managed thread.
+  See <<mvc-ann-async>> and <<mvc-ann-async-callable>>.
 
-|`ListenableFuture<V>`,
-`java.util.concurrent.CompletionStage<V>`,
-`java.util.concurrent.CompletableFuture<V>`
-|Alternative to `DeferredResult` as a convenience for example when an underlying service
-returns one of those.
+| `ListenableFuture<V>`,
+  `java.util.concurrent.CompletionStage<V>`,
+  `java.util.concurrent.CompletableFuture<V>`
+| Alternative to `DeferredResult` as a convenience for example when an underlying service
+  returns one of those.
 
-|`ResponseBodyEmitter`, `SseEmitter`
-|Emit a stream of objects asynchronously to be written to the response with
-``HttpMessageConverter``'s; also supported as the body of a `ResponseEntity`.
+| `ResponseBodyEmitter`, `SseEmitter`
+| Emit a stream of objects asynchronously to be written to the response with
+  ``HttpMessageConverter``'s; also supported as the body of a `ResponseEntity`.
+  See <<mvc-ann-async>> and <<mvc-ann-async-http-streaming>>.
 
-|`StreamingResponseBody`
-|Write to the response `OutputStream` asynchronously; also supported as the body of a
-`ResponseEntity`.
+| `StreamingResponseBody`
+| Write to the response `OutputStream` asynchronously; also supported as the body of a
+  `ResponseEntity`. See <<mvc-ann-async>> and <<mvc-ann-async-http-streaming>>.
 
-|Reactive types -- Reactor, RxJava, or others via `ReactiveAdapterRegistry`
-|Alternative to ``DeferredResult` with multi-value streams (e.g. `Flux`, `Observable`)
-collected to a `List`.
+| Reactive types -- Reactor, RxJava, or others via `ReactiveAdapterRegistry`
+| Alternative to ``DeferredResult` with multi-value streams (e.g. `Flux`, `Observable`)
+  collected to a `List`.
 
-For streaming scenarios -- .e.g. `text/event-stream`, `application/json+stream`,
-`SseEmitter` and `ResponseBodyEmitter` are used instead, where `ServletOutputStream` blocking
-I/O is performed on a Spring MVC managed thread and back pressure applied against the
-completion of each write.
+  For streaming scenarios -- e.g. `text/event-stream`, `application/json+stream` --
+  `SseEmitter` and `ResponseBodyEmitter` are used instead, where `ServletOutputStream`
+  blocking I/O is performed on a Spring MVC managed thread and back pressure applied
+  against the completion of each write.
 
-See <<mvc-ann-async-reactive-types>>.
+  See <<mvc-ann-async>> and <<mvc-ann-async-reactive-types>>.
 
-|Any other return value
-|If a return value is not matched to any of the above, by default it is treated as a view
-name, if it is `String` or `void` (default view name selection via
-`RequestToViewNameTranslator` applies); or as a model attribute to be added to the model,
-unless it is a simple type, as determined by
-{api-spring-framework}/beans/BeanUtils.html#isSimpleProperty-java.lang.Class-[BeanUtils#isSimpleProperty]
-in which case it remains unresolved.
+| Any other return value
+| If a return value is not matched to any of the above, by default it is treated as a view
+  name, if it is `String` or `void` (default view name selection via
+  `RequestToViewNameTranslator` applies); or as a model attribute to be added to the model,
+  unless it is a simple type, as determined by
+  {api-spring-framework}/beans/BeanUtils.html#isSimpleProperty-java.lang.Class-[BeanUtils#isSimpleProperty]
+  in which case it remains unresolved.
 |===
 
 
@@ -1936,7 +2100,7 @@ alternatively set `@ModelAttribute(binding=false)` as shown below:
 [source,java,indent=0]
 [subs="verbatim,quotes"]
 ----
-@ModelAttribute
+	@ModelAttribute
 	public AccountForm setUpForm() {
 		return new AccountForm();
 	}
@@ -2386,8 +2550,8 @@ on a container object that specifies request headers and body. Below is an examp
 	@PostMapping("/something")
 	public ResponseEntity<String> handle() {
 		// ...
-		URI location = ...
-		return new ResponseEntity.created(location).build();
+		URI location = ... ;
+		return ResponseEntity.created(location).build();
 	}
 ----
 
@@ -2497,15 +2661,19 @@ customized through `jsonpParameterNames` property.
 
 
 [[mvc-ann-modelattrib-methods]]
-=== Model Methods
+=== Model
 [.small]#<<web-reactive.adoc#webflux-ann-modelattrib-methods,Same in Spring WebFlux>>#
 
-The `@ModelAttribute` annotation can be used on `@RequestMapping`
-<<mvc-ann-modelattrib-method-args,method arguments>> to create or access an Object
-from the model and bind it to the request. `@ModelAttribute` can also be used as a
-method-level annotation on controller methods whose purpose is not to handle requests
-but to add commonly needed model attributes prior to request handling.
+The `@ModelAttribute` annotation can be used:
 
+* On a <<mvc-ann-modelattrib-method-args,method argument>> in `@RequestMapping` methods
+to create or access an Object from the model, and to bind it to the request through a
+`WebDataBinder`.
+* As a method-level annotation in `@Controller` or `@ControllerAdvice` classes helping
+to initialize the model prior to any `@RequestMapping` method invocation.
+* On a `@RequestMapping` method to mark its return value is a model attribute.
+
+This section discusses `@ModelAttribute` methods, or the 2nd from the list above.
 A controller can have any number of `@ModelAttribute` methods. All such methods are
 invoked before `@RequestMapping` methods in the same controller. A `@ModelAttribute`
 method can also be shared across controllers via `@ControllerAdvice`. See the section on
@@ -2570,14 +2738,16 @@ the model attribute name:
 
 
 [[mvc-ann-initbinder]]
-=== Binder Methods
+=== DataBinder
 [.small]#<<web-reactive.adoc#webflux-ann-initbinder,Same in Spring WebFlux>>#
 
-`@InitBinder` methods in an `@Controller` or `@ControllerAdvice` class can be used to
-customize type conversion for method arguments that represent String-based request values
-(e.g. request parameters, path variables, headers, cookies, and others). Type conversion
-also applies during data binding of request parameters onto `@ModelAttribute` arguments
-(i.e. command objects).
+`@Controller` or `@ControllerAdvice` classes can have `@InitBinder` methods in order to
+initialize instances of `WebDataBinder`, and those in turn are used to:
+
+* Bind request parameters (i.e. form data or query) to a model object.
+* Convert String-based request values such as request parameters, path variables,
+headers, cookies, and others, to the target type of controller method arguments.
+* Format model object values as String values when rendering HTML forms.
 
 `@InitBinder` methods can register controller-specific `java.bean.PropertyEditor`, or
 Spring `Converter` and `Formatter` components. In addition, the
@@ -2625,6 +2795,191 @@ controller-specific ``Formatter``'s:
 		// ...
 	}
 ----
+
+
+
+[[mvc-ann-exceptionhandler]]
+=== Exceptions
+[.small]#<<web-reactive.adoc#webflux-ann-controller-exceptions,Same in Spring WebFlux>>#
+
+`@Controller` and <<mvc-ann-controller-advice,@ControllerAdvice>> classes can have
+`@ExceptionHandler` methods to handle exceptions from controller methods. For example:
+
+[source,java,indent=0]
+[subs="verbatim,quotes"]
+----
+	@Controller
+	public class SimpleController {
+
+		// ...
+
+		@ExceptionHandler
+		public ResponseEntity<String> handle(IOException ex) {
+			// ...
+		}
+
+	}
+----
+
+The annotation can list the exception types to match. Or simply declare the target
+exception as a method argument as shown above. When multiple exception methods match,
+a root exception match is generally preferred to a cause exception match. More formally
+the `ExceptionDepthComparator` is used to sort exceptions based on their depth from the
+thrown exception type.
+
+In a multi-`@ControllerAdvice` arrangement, please declare your primary root exception
+mappings on a `@ControllerAdvice` prioritized with a corresponding order. While a root
+exception match is preferred to a cause, this is mainly among the methods of a given
+controller or `@ControllerAdvice`. That means a cause match on a higher-priority
+`@ControllerAdvice` is preferred to any match (e.g. root) on a lower-priority
+`@ControllerAdvice`.
+
+Support for `@ExceptionHandler` methods in Spring MVC is built on the `DispatcherServlet`
+level, <<mvc-exceptionhandlers,HandlerExceptionResolver>> mechanism.
+
+
+[[mvc-ann-exceptionhandler-args]]
+==== Method arguments
+
+`@ExceptionHandler` methods support the following arguments:
+
+[cols="1,2", options="header"]
+|===
+| Method argument | Description
+
+| Exception type
+| For access to the raised exception.
+
+| `HandlerMethod`
+| For access to the controller method that raised the exception.
+
+| `WebRequest`, `NativeWebRequest`
+| Generic access to request parameters, request & session attributes, without direct
+  use of the Servlet API.
+
+| `javax.servlet.ServletRequest`, `javax.servlet.ServletResponse`
+| Choose any specific request or response type -- e.g. `ServletRequest`, `HttpServletRequest`,
+  or Spring's `MultipartRequest`, `MultipartHttpServletRequest`.
+
+| `javax.servlet.http.HttpSession`
+| Enforces the presence of a session. As a consequence, such an argument is never `null`. +
+  **Note:** Session access is not thread-safe. Consider setting the
+  ``RequestMappingHandlerAdapter``'s "synchronizeOnSession" flag to "true" if multiple
+  requests are allowed to access a session concurrently.
+
+| `java.security.Principal`
+| Currently authenticated user; possibly a specific `Principal` implementation class if known.
+
+| `HttpMethod`
+| The HTTP method of the request.
+
+| `java.util.Locale`
+| The current request locale, determined by the most specific `LocaleResolver` available, in
+  effect, the configured `LocaleResolver`/`LocaleContextResolver`.
+
+| `java.util.TimeZone` + `java.time.ZoneId`
+| The time zone associated with the current request, as determined by a `LocaleContextResolver`.
+
+| `java.io.OutputStream`, `java.io.Writer`
+| For access to the raw response body as exposed by the Servlet API.
+
+| `java.util.Map`, `org.springframework.ui.Model`, `org.springframework.ui.ModelMap`
+| For access to the model for an error response, always empty.
+
+| `RedirectAttributes`
+| Specify attributes to use in case of a redirect -- i.e. to be appended to the query
+  string, and/or flash attributes to be stored temporarily until the request after redirect.
+  See <<mvc-redirecting-passing-data>> and <<mvc-flash-attributes>>.
+
+| `@SessionAttribute`
+| For access to any session attribute; in contrast to model attributes stored in the session
+  as a result of a class-level `@SessionAttributes` declaration. See
+  <<mvc-ann-sessionattribute>> for more details.
+
+| `@RequestAttribute`
+| For access to request attributes. See <<mvc-ann-requestattrib>> for more details.
+
+|===
+
+
+[[mvc-ann-exceptionhandler-return-values]]
+==== Return Values
+
+`@ExceptionHandler` methods support the following return values:
+
+[cols="1,2", options="header"]
+|===
+| Return value | Description
+
+| `@ResponseBody`
+| The return value is converted through ``HttpMessageConverter``s and written to the
+  response. See <<mvc-ann-responsebody>>.
+
+| `HttpEntity<B>`, `ResponseEntity<B>`
+| The return value specifies the full response including HTTP headers and body be converted
+  through ``HttpMessageConverter``s and written to the response.
+  See <<mvc-ann-responseentity>>.
+
+| `String`
+| A view name to be resolved with ``ViewResolver``'s and used together with the implicit
+  model -- determined through command objects and `@ModelAttribute` methods. The handler
+  method may also programmatically enrich the model by declaring a `Model` argument
+  (see above).
+
+| `View`
+| A `View` instance to use for rendering together with the implicit model -- determined
+  through command objects and `@ModelAttribute` methods. The handler method may also
+  programmatically enrich the model by declaring a `Model` argument (see above).
+
+| `java.util.Map`, `org.springframework.ui.Model`
+| Attributes to be added to the implicit model with the view name implicitly determined
+  through a `RequestToViewNameTranslator`.
+
+| `@ModelAttribute`
+| An attribute to be added to the model with the view name implicitly determined through
+  a `RequestToViewNameTranslator`.
+
+  Note that `@ModelAttribute` is optional. See "Any other return value" further below in
+  this table.
+
+| `ModelAndView` object
+| The view and model attributes to use, and optionally a response status.
+
+| `void`
+| A method with a `void` return type (or `null` return value) is considered to have fully
+  handled the response if it also has a `ServletResponse`, or an `OutputStream` argument, or
+  an `@ResponseStatus` annotation. The same is true also if the controller has made a positive
+  ETag or lastModified timestamp check (see <<mvc-caching-etag-lastmodified>> for details).
+
+  If none of the above is true, a `void` return type may also indicate "no response body" for
+  REST controllers, or default view name selection for HTML controllers.
+
+| Any other return value
+| If a return value is not matched to any of the above, by default it is treated as a
+  model attribute to be added to the model, unless it is a simple type, as determined by
+  {api-spring-framework}/beans/BeanUtils.html#isSimpleProperty-java.lang.Class-[BeanUtils#isSimpleProperty]
+  in which case it remains unresolved.
+|===
+
+
+[[mvc-ann-rest-exceptions]]
+==== REST API exceptions
+[.small]#<<web-reactive.adoc#webflux-ann-rest-exceptions,Same in Spring WebFlux>>#
+
+A common requirement for REST services is to include error details in the body of the
+response. The Spring Framework does not automatically do this because the representation
+of error details in the response body is application specific. However a
+`@RestController` may use `@ExceptionHandler` methods with a `ResponseEntity` return
+value to set the status and the body of the response. Such methods may also be declared
+in `@ControllerAdvice` classes to apply them globally.
+
+Applications that implement global exception handling with error details in the response
+body should consider extending
+{api-spring-framework}/web/servlet/mvc/method/annotation/ResponseEntityExceptionHandler.html[ResponseEntityExceptionHandler]
+which provides handling for exceptions that Spring MVC raises along with hooks to
+customize the response body. To make use of this, create a sub-class of
+`ResponseEntityExceptionHandler`, annotate with `@ControllerAdvice`, override the
+necessary methods, and declare it as a Spring bean.
 
 
 
@@ -2678,45 +3033,27 @@ Javadoc for more details.
 
 [[mvc-uri-building]]
 == URI Links
+[.small]#<<web-reactive.adoc#mvc-uri-building,Same in Spring WebFlux>>#
 
-Spring MVC provides a mechanism for building and encoding a URI using
-`UriComponentsBuilder` and `UriComponents`.
+This section describes various options available in the Spring Framework to prepare URIs.
 
-For example you can expand and encode a URI template string:
 
-[source,java,indent=0]
-[subs="verbatim,quotes"]
-----
-	UriComponents uriComponents = UriComponentsBuilder.fromUriString(
-			"http://example.com/hotels/{hotel}/bookings/{booking}").build();
 
-	URI uri = uriComponents.expand("42", "21").encode().toUri();
-----
+include::web-uris.adoc[leveloffset=+2]
 
-Note that `UriComponents` is immutable and the `expand()` and `encode()` operations
-return new instances if necessary.
 
-You can also expand and encode using individual URI components:
 
-[source,java,indent=0]
-[subs="verbatim,quotes"]
-----
-	UriComponents uriComponents = UriComponentsBuilder.newInstance()
-			.scheme("http").host("example.com").path("/hotels/{hotel}/bookings/{booking}").build()
-			.expand("42", "21")
-			.encode();
-----
+[[mvc-servleturicomponentsbuilder]]
+=== Servlet request relative
 
-In a Servlet environment the `ServletUriComponentsBuilder` subclass provides static
-factory methods to copy available URL information from a Servlet requests:
+You can use `ServletUriComponentsBuilder` to create URIs relative to the current request:
 
 [source,java,indent=0]
 [subs="verbatim,quotes"]
 ----
 	HttpServletRequest request = ...
 
-	// Re-use host, scheme, port, path and query string
-	// Replace the "accountId" query param
+	// Re-uses host, scheme, port, path and query string...
 
 	ServletUriComponentsBuilder ucb = ServletUriComponentsBuilder.fromRequest(request)
 			.replaceQueryParam("accountId", "{id}").build()
@@ -2724,48 +3061,44 @@ factory methods to copy available URL information from a Servlet requests:
 			.encode();
 ----
 
-Alternatively, you may choose to copy a subset of the available information up to and
-including the context path:
+You can create URIs relative to the context path:
 
 [source,java,indent=0]
 [subs="verbatim,quotes"]
 ----
-	// Re-use host, port and context path
-	// Append "/accounts" to the path
+	// Re-uses host, port and context path...
 
 	ServletUriComponentsBuilder ucb = ServletUriComponentsBuilder.fromContextPath(request)
 			.path("/accounts").build()
 ----
 
-Or in cases where the `DispatcherServlet` is mapped by name (e.g. `/main/{asterisk}`), you can
-also have the literal part of the servlet mapping included:
+You can create URIs relative to a Servlet (e.g. `/main/{asterisk}`):
 
 [source,java,indent=0]
 [subs="verbatim,quotes"]
 ----
-	// Re-use host, port, context path
-	// Append the literal part of the servlet mapping to the path
-	// Append "/accounts" to the path
+	// Re-uses host, port, context path, and Servlet prefix...
 
 	ServletUriComponentsBuilder ucb = ServletUriComponentsBuilder.fromServletMapping(request)
 			.path("/accounts").build()
 ----
 
-[TIP]
+[CAUTION]
 ====
-Both `ServletUriComponentsBuilder` and `MvcUriComponentsBuilder` detect, extract, and use
-information from the "Forwarded" header, or from "X-Forwarded-Host", "X-Forwarded-Port",
-and "X-Forwarded-Proto" if "Forwarded" is not present, so that the resulting links reflect
-the original request. Note that you can also use the
-<<filters-forwarded-headers,ForwardedHeaderFilter>> to the same once, globally.
+`ServletUriComponentsBuilder` detects and uses information from the "Forwarded",
+"X-Forwarded-Host", "X-Forwarded-Port", and "X-Forwarded-Proto" headers, so the resulting
+links reflect the original request. You need to ensure that your application is behind
+a trusted proxy which filters out such headers coming from outside. Also consider using
+the <<filters-forwarded-headers,ForwardedHeaderFilter>> which processes such headers once
+per request, and also provides an option to remove and ignore such headers.
 ====
 
 
 
 [[mvc-links-to-controllers]]
-=== Links to Controllers
+=== Links to controllers
 
-Spring MVC also provides a mechanism for building links to controller methods. For example, given:
+Spring MVC provides a mechanism to prepare links to controller methods. For example:
 
 [source,java,indent=0]
 [subs="verbatim,quotes"]
@@ -2834,6 +3167,17 @@ with a base URL and then use the instance-based "withXxx" methods. For example:
 	URI uri = uriComponents.encode().toUri();
 ----
 
+[CAUTION]
+====
+`MvcUriComponentsBuilder` detects and uses information from the "Forwarded",
+"X-Forwarded-Host", "X-Forwarded-Port", and "X-Forwarded-Proto" headers, so the resulting
+links reflect the original request. You need to ensure that your application is behind
+a trusted proxy which filters out such headers coming from outside. Also consider using
+the <<filters-forwarded-headers,ForwardedHeaderFilter>> which processes such headers once
+per request, and also provides an option to remove and ignore such headers.
+====
+
+
 
 
 [[mvc-links-to-controllers-from-views]]
@@ -2891,280 +3235,25 @@ in order to use a specific instance of `MvcUriComponentsBuilder` with a custom b
 
 
 
-[[mvc-exceptionhandlers]]
-== Exception Handling
-
-
-
-[[mvc-exceptionhandlers-overview]]
-=== Overview
-
-Spring `HandlerExceptionResolver` implementations deal with unexpected exceptions that
-occur during controller execution. A `HandlerExceptionResolver` somewhat resembles the
-exception mappings you can define in the web application descriptor `web.xml`. However,
-they provide a more flexible way to do so. For example they provide information about
-which handler was executing when the exception was thrown. Furthermore, a programmatic
-way of handling exceptions gives you more options for responding appropriately before
-the request is forwarded to another URL (the same end result as when you use the Servlet
-specific exception mappings).
-
-Besides implementing the `HandlerExceptionResolver` interface, which is only a matter of
-implementing the `resolveException(Exception, Handler)` method and returning a
-`ModelAndView`, you may also use the provided `SimpleMappingExceptionResolver` or create
-`@ExceptionHandler` methods. The `SimpleMappingExceptionResolver` enables you to take
-the class name of any exception that might be thrown and map it to a view name. This is
-functionally equivalent to the exception mapping feature from the Servlet API, but it is
-also possible to implement more finely grained mappings of exceptions from different
-handlers. The `@ExceptionHandler` annotation on the other hand can be used on methods
-that should be invoked to handle an exception. Such methods may be defined locally
-within an `@Controller` or may apply to many `@Controller` classes when defined within an
-`@ControllerAdvice` class. The following sections explain this in more detail.
-
-
-
-[[mvc-ann-exceptionhandler]]
-=== @ExceptionHandler
-
-The `HandlerExceptionResolver` interface and the `SimpleMappingExceptionResolver`
-implementations allow you to map Exceptions to specific views declaratively along with
-some optional Java logic before forwarding to those views. However, in some cases,
-especially when relying on `@ResponseBody` methods rather than on view resolution, it
-may be more convenient to directly set the status of the response and optionally write
-error content to the body of the response.
-
-You can do that with `@ExceptionHandler` methods. When declared within a controller such
-methods apply to exceptions raised by `@RequestMapping` methods of that controller (or
-any of its subclasses). You can also declare an `@ExceptionHandler` method within an
-`@ControllerAdvice` class in which case it handles exceptions from `@RequestMapping`
-methods from many controllers. Below is an example of a controller-local
-`@ExceptionHandler` method:
-
-[source,java,indent=0]
-[subs="verbatim,quotes"]
-----
-	@Controller
-	public class SimpleController {
-
-		// @RequestMapping methods omitted ...
-
-		@ExceptionHandler(IOException.class)
-		public ResponseEntity<String> handleIOException(IOException ex) {
-			// prepare responseEntity
-			return responseEntity;
-		}
-
-	}
-----
-
-The `@ExceptionHandler` value can be set to an array of Exception types. If an exception
-is thrown that matches one of the types in the list, then the method annotated with the
-matching `@ExceptionHandler` will be invoked. If the annotation value is not set then
-the exception types listed as method arguments are used.
-
-[TIP]
-====
-For `@ExceptionHandler` methods, a root exception match will be preferred to just
-matching a cause of the current exception, among the handler methods of a particular
-controller or advice bean. However, a cause match on a higher-priority `@ControllerAdvice`
-will still be preferred to a any match (whether root or cause level) on a lower-priority
-advice bean. As a consequence, when using a multi-advice arrangement, please declare your
-primary root exception mappings on a prioritized advice bean with a corresponding order!
-====
-
-Much like standard controller methods annotated with a `@RequestMapping` annotation, the
-method arguments and return values of `@ExceptionHandler` methods can be flexible. For
-example, the `HttpServletRequest` can be accessed in Servlet environments. The return
-type can be a `String`, which is interpreted as a view name, a `ModelAndView` object,
-a `ResponseEntity`, or you can also add the `@ResponseBody` to have the method return
-value converted with message converters and written to the response stream.
-
-
-
-[[mvc-ann-rest-spring-mvc-exceptions]]
-=== Framework exceptions
-
-Spring MVC may raise a number of exceptions while processing a request. The
-`SimpleMappingExceptionResolver` can easily map any exception to a default error view as
-needed. However, when working with clients that interpret responses in an automated way
-you will want to set specific status code on the response. Depending on the exception
-raised the status code may indicate a client error (4xx) or a server error (5xx).
-
-The `DefaultHandlerExceptionResolver` translates Spring MVC exceptions to specific error
-status codes. It is registered by default with the MVC namespace, the MVC Java config,
-and also by the `DispatcherServlet` (i.e. when not using the MVC namespace or Java
-config). Listed below are some of the exceptions handled by this resolver and the
-corresponding status codes:
-
-|===
-| Exception| HTTP Status Code
-
-| `BindException`
-| 400 (Bad Request)
-
-| `ConversionNotSupportedException`
-| 500 (Internal Server Error)
-
-| `HttpMediaTypeNotAcceptableException`
-| 406 (Not Acceptable)
-
-| `HttpMediaTypeNotSupportedException`
-| 415 (Unsupported Media Type)
-
-| `HttpMessageNotReadableException`
-| 400 (Bad Request)
-
-| `HttpMessageNotWritableException`
-| 500 (Internal Server Error)
-
-| `HttpRequestMethodNotSupportedException`
-| 405 (Method Not Allowed)
-
-| `MethodArgumentNotValidException`
-| 400 (Bad Request)
-
-| `MissingPathVariableException`
-| 500 (Internal Server Error)
-
-| `MissingServletRequestParameterException`
-| 400 (Bad Request)
-
-| `MissingServletRequestPartException`
-| 400 (Bad Request)
-
-| `NoHandlerFoundException`
-| 404 (Not Found)
-
-| `NoSuchRequestHandlingMethodException`
-| 404 (Not Found)
-
-| `TypeMismatchException`
-| 400 (Bad Request)
-|===
-
-The `DefaultHandlerExceptionResolver` works transparently by setting the status of the
-response. However, it stops short of writing any error content to the body of the
-response while your application may need to add developer-friendly content to every
-error response for example when providing a REST API. You can prepare a `ModelAndView`
-and render error content through view resolution -- i.e. by configuring a
-`ContentNegotiatingViewResolver`, `MappingJackson2JsonView`, and so on. However, you may
-prefer to use `@ExceptionHandler` methods instead.
-
-If you prefer to write error content via `@ExceptionHandler` methods you can extend
-`ResponseEntityExceptionHandler` instead. This is a convenient base for
-`@ControllerAdvice` classes providing an `@ExceptionHandler` method to handle standard
-Spring MVC exceptions and return `ResponseEntity`. That allows you to customize the
-response and write error content with message converters. See the
-`ResponseEntityExceptionHandler` javadocs for more details.
-
-
-
-[[mvc-ann-rest-exceptions]]
-=== REST API exceptions
-
-An `@RestController` may use `@ExceptionHandler` methods that return a
-`ResponseEntity` to provide both a response status and error details in the body
-of the response. Such methods may also be added to `@ControllerAdvice`
-classes for exception handling across a subset or all controllers.
-
-A common requirement is to include error details in the body of the response.
-Spring does not automatically do this (although Spring Boot does) because the
-representation of error details in the response body is application specific.
-
-Applications that wish to implement a global exception handling strategy with
-error details in the response body should consider extending the abstract base
-class `ResponseEntityExceptionHandler` which provides handling for the exceptions
-that Spring MVC raises and provides hooks to customize the response body as
-well as to handle other exceptions. Simply declare the extension class as a
-Spring bean and annotate it with `@ControllerAdvice`. For more details see
-See `ResponseEntityExceptionHandler`.
-
-
-
-[[mvc-ann-annotated-exceptions]]
-=== Annotated Exception
-
-A business exception can be annotated with `@ResponseStatus`. When the exception is
-raised, the `ResponseStatusExceptionResolver` handles it by setting the status of the
-response accordingly. By default the `DispatcherServlet` registers the
-`ResponseStatusExceptionResolver` and it is available for use.
-
-
-
-[[mvc-ann-customer-servlet-container-error-page]]
-=== Container error page
-
-When the status of the response is set to an error status code and the body of the
-response is empty, Servlet containers commonly render an HTML formatted error page. To
-customize the default error page of the container, you can declare an `<error-page>`
-element in `web.xml`. Up until Servlet 3, that element had to be mapped to a specific
-status code or exception type. Starting with Servlet 3 an error page does not need to be
-mapped, which effectively means the specified location customizes the default Servlet
-container error page.
-
-[source,xml,indent=0]
-[subs="verbatim,quotes"]
-----
-	<error-page>
-		<location>/error</location>
-	</error-page>
-----
-
-Note that the actual location for the error page can be a JSP page or some other URL
-within the container including one handled through an `@Controller` method:
-
-When writing error information, the status code and the error message set on the
-`HttpServletResponse` can be accessed through request attributes in a controller:
-
-[source,java,indent=0]
-[subs="verbatim,quotes"]
-----
-	@Controller
-	public class ErrorController {
-
-		@RequestMapping(path = "/error", produces = MediaType.APPLICATION_JSON_UTF8_VALUE)
-		@ResponseBody
-		public Map<String, Object> handle(HttpServletRequest request) {
-
-			Map<String, Object> map = new HashMap<String, Object>();
-			map.put("status", request.getAttribute("javax.servlet.error.status_code"));
-			map.put("reason", request.getAttribute("javax.servlet.error.message"));
-
-			return map;
-		}
-
-	}
-----
-
-or in a JSP:
-
-[source,xml,indent=0]
-[subs="verbatim,quotes"]
-----
-	<%@ page contentType="application/json" pageEncoding="UTF-8"%>
-	{
-		status:<%=request.getAttribute("javax.servlet.error.status_code") %>,
-		reason:<%=request.getAttribute("javax.servlet.error.message") %>
-	}
-----
-
-
-
-
 [[mvc-ann-async]]
 == Async Requests
+[.small]#<<mvc-ann-async-vs-webflux,Compared to WebFlux>>#
 
-Spring MVC has an extensive integration with the Servlet 3.0 asynchronous request
-processing. <<mvc-ann-async-deferredresult>> and <<mvc-ann-async-callable>>
-provide basic support for producing return values asynchronously. Controllers can produce
-<<mvc-ann-async-http-streaming,response streams>> including
-<<mvc-ann-async-sse,SSE>> and <<mvc-ann-async-output-stream,raw data>>. Controllers can
-use reactive clients and return <<mvc-ann-async-reactive-types,reactive return types>>
-to Spring MVC for response handling.
+Spring MVC has an extensive integration with Servlet 3.0 asynchronous request
+<<mvc-ann-async-processing,processing>>:
+
+* <<mvc-ann-async-deferredresult>> and <<mvc-ann-async-callable>> return values in
+controller method provide basic support for a single asynchronous return value.
+* Controllers can <<mvc-ann-async-http-streaming,stream>> multiple values including
+<<mvc-ann-async-sse,SSE>> and <<mvc-ann-async-output-stream,raw data>>.
+* Controllers can use reactive clients and return
+<<mvc-ann-async-reactive-types,reactive types>> for response handling.
 
 
 
 [[mvc-ann-async-deferredresult]]
 === `DeferredResult`
+[.small]#<<mvc-ann-async-vs-webflux,Compared to WebFlux>>#
 
 Once the asynchronous request processing feature is
 <<mvc-ann-async-configuration,enabled>> in the Servlet container, controller methods can
@@ -3192,6 +3281,7 @@ example in response to an external event (JMS message), a scheduled task, or oth
 
 [[mvc-ann-async-callable]]
 === `Callable`
+[.small]#<<mvc-ann-async-vs-webflux,Compared to WebFlux>>#
 
 A controller may also wrap any supported return value with `java.util.concurrent.Callable`:
 
@@ -3218,6 +3308,7 @@ The return value will then be obtained by executing the the given task through t
 
 [[mvc-ann-async-processing]]
 === Processing
+[.small]#<<mvc-ann-async-vs-webflux,Compared to WebFlux>>#
 
 Here is a very concise overview of Servlet asynchronous request processing:
 
@@ -3261,9 +3352,8 @@ https://spring.io/blog/2012/05/07/spring-mvc-3-2-preview-introducing-servlet-3-a
 blog posts] that introduced asynchronous request processing support in Spring MVC 3.2.
 
 
-
 [[mvc-ann-async-exceptions]]
-=== Exception handling
+==== Exception handling
 
 When using a `DeferredResult` you can choose whether to call `setResult` or
 `setErrorResult` with an exception. In both cases Spring MVC dispatches the request back
@@ -3276,9 +3366,8 @@ When using `Callable`, similar processing logic follows. The main difference bei
 the result is returned from the `Callable` or an exception is raised by it.
 
 
-
 [[mvc-ann-async-interception]]
-=== Interception
+==== Interception
 
 ``HandlerInterceptor``'s can also be `AsyncHandlerInterceptor` in order to receive the
 `afterConcurrentHandlingStarted` callback on the initial request that starts asynchronous
@@ -3295,13 +3384,50 @@ See the Javadoc of `DeferredResult` for more details. `Callable` can be substitu
 `WebAsyncTask` that exposes additional methods for timeout and completion callbacks.
 
 
+[[mvc-ann-async-vs-webflux]]
+==== Compared to WebFlux
+
+The Servlet API was originally built for making a single pass through the Filter-Servlet
+chain. Asynchronous request processing, added in Servlet 3.0, allows applications to exit
+the Filter-Servlet chain but leave the response open for further processing. The Spring MVC
+async support is built around that mechanism. When a controller returns a `DeferredResult`,
+the Filter-Servlet chain is exited and the Servlet container thread is released. Later when
+the `DeferredResult` is set, an ASYNC dispatch (to the same URL) is made during which the
+controller is mapped again but rather than invoking it, the `DeferredResult` value is used
+(as if the controller returned it) to resume processing.
+
+By contrast Spring WebFlux is neither built on the Servlet API, nor does it need such an
+asynchronous request processing feature because it is asynchronous by design. Asynchronous
+handling is built into all framework contracts and is intrinsically supported through ::
+stages of request processing.
+
+From a programming model perspective, both Spring MVC and Spring WebFlux support
+asynchronous and <<mvc-ann-async-reactive-types>> as return values in controller methods.
+Spring MVC even supports streaming, including reactive back pressure. However individual
+writes to the response remain blocking (and performed on a separate thread) unlike WebFlux
+that relies on non-blocking I/O and does not need an extra thread for each write.
+
+Another fundamental difference is that Spring MVC does not support asynchronous or
+reactive types in controller method arguments, e.g. `@RequestBody`, `@RequestPart`, and
+others, nor does it have any explicit support for asynchronous and reactive types as
+model attributes. Spring WebFlux does support all that.
+
+
 
 [[mvc-ann-async-http-streaming]]
-=== Streaming response
+=== HTTP Streaming
+[.small]#<<web-reactive.adoc#webflux-codecs-streaming,Same in Spring WebFlux>>#
 
-What if you wanted to push multiple events on a single HTTP response? The
-`ResponseBodyEmitter` return value can be used to stream multiple Objects, where each
-Object sent is serialized with an
+`DeferredResult` and `Callable` can be used for a single asynchronous return value.
+What if you want to produce multiple asynchronous values and have those written to the
+response?
+
+
+[[mvc-ann-async-objects]]
+==== Objects
+
+The `ResponseBodyEmitter` return value can be used to produce a stream of Objects, where
+each Object sent is serialized with an
 <<integration.adoc#rest-message-conversion,HttpMessageConverter>> and written to the
 response. For example:
 
@@ -3328,10 +3454,16 @@ response. For example:
 `ResponseBodyEmitter` can also be used as the body in a `ResponseEntity` allowing you to
 customize the status and headers of the response.
 
+When an `emitter` throws an `IOException` (e.g. if the remote client went away) applications
+are not responsible for cleaning up the connection, and should not invoke `emitter.complete`
+or `emitter.completeWithError`. Instead the servlet container automatically initiates an
+`AsyncListener` error notification in which Spring MVC makes a `completeWithError` call,
+which in turn performs one a final ASYNC dispatch to the application during which Spring MVC
+invokes the configured exception resolvers and completes the request.
 
 
 [[mvc-ann-async-sse]]
-=== Server-Sent Events
+==== SSE
 
 `SseEmitter` is a sub-class of `ResponseBodyEmitter` that provides support for
 http://www.w3.org/TR/eventsource/[Server-Sent Events] where events sent from the server
@@ -3364,10 +3496,11 @@ does not support Server-Sent Events. Consider using Spring's
 <<web.adoc#websocket-fallback,SockJS fallback>> transports (including SSE) that target
 a wide range of browsers.
 
+Also see <<mvc-ann-async-objects,previous section>> for notes on exception handling.
 
 
 [[mvc-ann-async-output-stream]]
-=== Streaming raw data
+==== Raw data
 
 Sometimes it is useful to bypass message conversion and stream directly to the response
 `OutputStream` for example for a file download. Use the of the `StreamingResponseBody`
@@ -3393,7 +3526,8 @@ customize the status and headers of the response.
 
 
 [[mvc-ann-async-reactive-types]]
-=== Reactive return values
+=== Reactive types
+[.small]#<<web-reactive.adoc#webflux-codecs-streaming,Same in Spring WebFlux>>#
 
 Spring MVC supports use of reactive client libraries in a controller. This includes the
 `WebClient` from `spring-webflux` and others such as Spring Data reactive data
@@ -3402,14 +3536,14 @@ from the controller method .
 
 Reactive return values are handled as follows:
 
-* A single-value promise is adapted to and similar to using `DeferredResult`. Examples
+* A single-value promise is adapted to, and similar to using `DeferredResult`. Examples
 include `Mono` (Reactor) or `Single` (RxJava).
 * A multi-value stream, with a streaming media type such as `"application/stream+json"`
-or `"text/event-stream"`, is adapted to and similar to using `ResponseBodyEmitter` or
+or `"text/event-stream"`, is adapted to, and similar to using `ResponseBodyEmitter` or
 `SseEmitter`. Examples include `Flux` (Reactor) or `Observable` (RxJava).
 Applications can also return `Flux<ServerSentEvent>` or `Observable<ServerSentEvent>`.
 * A multi-value stream, with any other media type (e.g. "application/json"), is adapted
-to and similar to using `DeferredResult<List<?>>`.
+to, and similar to using `DeferredResult<List<?>>`.
 
 [TIP]
 ====
@@ -3418,108 +3552,79 @@ Spring MVC supports Reactor and RxJava through the
 `spring-core` which allows it to adapt from multiple reactive libraries.
 ====
 
-When streaming to the response with a reactive type, Spring MVC performs (blocking)
-writes to the response through the
-through the <<mvc-ann-async-configuration-spring-mvc,configured>> MVC `TaskExecutor`.
-By default this is a `SyncTaskExecutor` and not suitable for production.
-https://jira.spring.io/browse/SPR-16203[SPR-16203] will provide better defaults.
-In the mean time please configure the executor through the MVC config.
+When streaming to the response via reactive types, Spring MVC supports reactive back
+pressure, but still needs to use blocking I/O to perform actual writes. This is done
+through the <<mvc-ann-async-configuration-spring-mvc,configured>> MVC `TaskExecutor` on
+a separate thread in order to avoid blocking the upstream source (e.g. a `Flux` returned
+from the `WebClient`). By default a `SyncTaskExecutor` is used which is not suitable for
+production. https://jira.spring.io/browse/SPR-16203[SPR-16203] will provide better
+defaults in Spring Framework 5.1. In the mean time please configure the executor through
+the <<mvc-ann-async-configuration-spring-mvc,MVC config>>.
+
+
+
+[[mvc-ann-async-disconnects]]
+=== Disconnects
+[.small]#<<web-reactive.adoc#webflux-codecs-streaming,Same in Spring WebFlux>>#
+
+The Servlet API does not provide any notification when a remote client goes away.
+Therefore while streaming to the response, whether via <<mvc-ann-async-sse,SseEmitter>> or
+<<mvc-ann-async-reactive-types,reactive types>, it is important to send data periodically,
+since the write would fail if the client has disconnected. The send could take the form
+of an empty (comment-only) SSE event, or any other data that the other side would have to
+to interpret as a heartbeat and ignore.
+
+Alternatively consider using web messaging solutions such as
+<<websocket-stomp,STOMP over WebSocket>> or WebSocket with <<websocket-fallback,SockJS>>
+that have a built-in heartbeat mechanism.
 
 
 
 [[mvc-ann-async-configuration]]
 === Configuration
+[.small]#<<mvc-ann-async-vs-webflux,Compared to WebFlux>>#
 
-For asynchronous requests there are minor requirements at the Servlet container
-level and more controls in Spring MVC configuration.
+The async request processing feature must be enabled at the Servlet container level.
+The MVC config also exposes several options for asynchronous requests.
 
 
 [[mvc-ann-async-configuration-servlet3]]
-==== Servlet container config
+==== Servlet container
 
-For applications configured with a `web.xml` be sure to update to version 3.0:
+Filter and Servlet declarations have an `asyncSupported` that needs to be set to true
+in order enable asynchronous request processing. In addition, Filter mappings should be
+declared to handle the ASYNC `javax.servlet.DispatchType`.
 
-[source,xml,indent=0]
-[subs="verbatim,quotes"]
-----
-	<web-app xmlns="http://java.sun.com/xml/ns/javaee"
-		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-		xsi:schemaLocation="
-				http://java.sun.com/xml/ns/javaee
-				http://java.sun.com/xml/ns/javaee/web-app_3_0.xsd"
-		version="3.0">
+In Java configuration, when you use `AbstractAnnotationConfigDispatcherServletInitializer`
+to initialize the Servlet container, this is done automatically.
 
-		...
-
-	</web-app>
-----
-
-Asynchronous support must be enabled on the `DispatcherServlet` through the
-`<async-supported>true</async-supported>` sub-element in `web.xml`. Additionally
-any `Filter` that participates in asyncrequest processing must be configured
-to support the ASYNC dispatcher type. It should be safe to enable the ASYNC
-dispatcher type for all filters provided with the Spring Framework since they
-usually extend `OncePerRequestFilter` and that has runtime checks for whether
-the filter needs to be involved in async dispatches or not.
-
-Below is some example web.xml configuration:
-
-[source,xml,indent=0]
-[subs="verbatim,quotes"]
-----
-	<web-app xmlns="http://java.sun.com/xml/ns/javaee"
-		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-		xsi:schemaLocation="
-				http://java.sun.com/xml/ns/javaee
-				http://java.sun.com/xml/ns/javaee/web-app_3_0.xsd"
-		version="3.0">
-
-		<filter>
-			<filter-name>Spring OpenEntityManagerInViewFilter</filter-name>
-			<filter-class>org.springframework.~.OpenEntityManagerInViewFilter</filter-class>
-			<async-supported>true</async-supported>
-		</filter>
-
-		<filter-mapping>
-			<filter-name>Spring OpenEntityManagerInViewFilter</filter-name>
-			<url-pattern>/*</url-pattern>
-			<dispatcher>REQUEST</dispatcher>
-			<dispatcher>ASYNC</dispatcher>
-		</filter-mapping>
-
-	</web-app>
-
-----
-
-If using Servlet 3, Java based configuration for example via `WebApplicationInitializer`,
-you'll also need to set the "asyncSupported" flag as well as the ASYNC dispatcher type
-just like with `web.xml`. To simplify all this configuration, consider extending
-`AbstractDispatcherServletInitializer`, or better
-`AbstractAnnotationConfigDispatcherServletInitializer` which automatically
-set those options and make it very easy to register `Filter` instances.
+In `web.xml` configuration, add `<async-supported>true</async-supported>` to the
+`DispatcherServlet` and to `Filter` declarations, and also add
+`<dispatcher>ASYNC</dispatcher>` to filter mappings.
 
 
 [[mvc-ann-async-configuration-spring-mvc]]
-==== Spring MVC config
+==== Spring MVC
 
-The MVC Java config and the MVC namespace provide options for configuring
-asynchronous request processing. `WebMvcConfigurer` has the method
-`configureAsyncSupport` while `<mvc:annotation-driven>` has an
-`<async-support>` sub-element.
+The MVC config exposes options related to async request processing:
 
-Those allow you to configure the default timeout value to use for async requests, which
-if not set depends on the underlying Servlet container (e.g. 10 seconds on Tomcat). You
-can also configure an `AsyncTaskExecutor` to use for executing `Callable` instances
-returned from controller methods. It is highly recommended to configure this property
-since by default Spring MVC uses `SimpleAsyncTaskExecutor`. The MVC Java config and the
-MVC namespace also allow you to register `CallableProcessingInterceptor` and
-`DeferredResultProcessingInterceptor` instances.
+* Java config -- use the `configureAsyncSupport` callback on `WebMvcConfigurer`.
+* XML namespace -- use the `<async-support>` element under `<mvc:annotation-driven>`.
 
-If you need to override the default timeout value for a specific `DeferredResult`, you
-can do so by using the appropriate class constructor. Similarly, for a `Callable`, you
-can wrap it in a `WebAsyncTask` and use the appropriate class constructor to customize
-the timeout value. The class constructor of `WebAsyncTask` also allows providing an
-`AsyncTaskExecutor`.
+You can configure the following:
+
+* Default timeout value for async requests, which if not set, depends
+on the underlying Servlet container (e.g. 10 seconds on Tomcat).
+* `AsyncTaskExecutor` to use for blocking writes when streaming with
+<<mvc-ann-async-reactive-types>>, and also for executing ``Callable``'s returned from
+controller methods. It is highly recommended to configure this property if you're
+streaming with reactive types or have controller methods that return `Callable` since
+by default it is a `SimpleAsyncTaskExecutor`.
+* ``DeferredResultProcessingInterceptor``'s and ``CallableProcessingInterceptor``'s.
+
+Note that the default timeout value can also be set on a `DeferredResult`,
+`ResponseBodyEmitter` and `SseEmitter`. For a `Callable`, use `WebAsyncTask` to provide
+a timeout value.
 
 
 
@@ -3750,6 +3855,11 @@ https://tools.ietf.org/html/rfc7232#section-2.3[RFC 7232 Section 2.3].
 
 
 
+include::webmvc-view.adoc[leveloffset=+1]
+
+
+
+
 [[mvc-config]]
 == MVC Config
 [.small]#<<web-reactive.adoc#webflux-config,Same in Spring WebFlux>>#
@@ -3760,9 +3870,9 @@ applications along with a configuration API to customize it.
 For more advanced customizations, not available in the configuration API, see
 <<mvc-config-advanced-java>> and <<mvc-config-advanced-xml>>.
 
-You do not need to understand the underlying beans created by the MVC Java config and the
-MVC namespace but if you want to learn more, see <<mvc-servlet-special-bean-types>> and
-<<mvc-servlet-config>>.
+You do not need to understand the underlying beans created by the MVC Java config and
+the MVC namespace but if you want to learn more, see <<mvc-servlet-special-bean-types>>
+and <<mvc-servlet-config>>.
 
 
 [[mvc-config-enable]]
@@ -3823,10 +3933,10 @@ In Java config implement `WebMvcConfigurer` interface:
 	}
 ----
 
-In XML check attributes and sub-elements of `<mvc:annotation-driven/>`. You can view the
-http://schema.spring.io/mvc/spring-mvc.xsd[Spring MVC XML schema] or use the code
-completion feature of your IDE to discover what attributes and sub-elements are
-available.
+In XML check attributes and sub-elements of `<mvc:annotation-driven/>`. You can
+view the http://schema.spring.io/mvc/spring-mvc.xsd[Spring MVC XML schema] or use
+the code completion feature of your IDE to discover what attributes and
+sub-elements are available.
 
 
 
@@ -3835,8 +3945,8 @@ available.
 [.small]#<<web-reactive.adoc#webflux-config-conversion,Same in Spring WebFlux>>#
 
 By default formatters for `Number` and `Date` types are installed, including support for
-the `@NumberFormat` and `@DateTimeFormat` annotations. Full support for the Joda Time
-formatting library is also installed if Joda Time is present on the classpath.
+the `@NumberFormat` and `@DateTimeFormat` annotations. Full support for the Joda-Time
+formatting library is also installed if Joda-Time is present on the classpath.
 
 In Java config, register custom formatters and converters:
 
@@ -4194,8 +4304,7 @@ And the same in XML use the `<mvc:view-controller>` element:
 The MVC config simplifies the registration of view resolvers.
 
 The following is a Java config example that configures content negotiation view
-resolution using FreeMarker HTML templates and Jackson as a default `View` for
-JSON rendering:
+resolution using JSP and Jackson as a default `View` for JSON rendering:
 
 [source,java,indent=0]
 [subs="verbatim,quotes"]
@@ -4323,8 +4432,8 @@ See also
 <<mvc-caching-static-resources, HTTP caching support for static resources>>.
 
 The resource handler also supports a chain of
-{api-spring-framework}/web/servlet/resource/ResourceResolver.html[ResourceResolver]'s and
-{api-spring-framework}/web/servlet/resource/ResourceTransformer.html[ResourceResolver]'s.
+{api-spring-framework}/web/servlet/resource/ResourceResolver.html[ResourceResolver]s and
+{api-spring-framework}/web/servlet/resource/ResourceTransformer.html[ResourceTransformer]s.
 which can be used to create a toolchain for working with optimized resources.
 
 The `VersionResourceResolver` can be used for versioned resource URLs based on an MD5 hash
@@ -4565,10 +4674,6 @@ hook of the Spring `ApplicationContext`:
 Note that `MyPostProcessor` needs to be declared as a bean either explicitly in XML or
 detected through a `<component scan/>` declaration.
 
-
-
-
-include::webmvc-view.adoc[leveloffset=+1]
 
 
 
